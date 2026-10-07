@@ -7,9 +7,12 @@
 #PBS -l walltime=24:00:00
 #PBS -l select=1:ncpus=16:mpiprocs=16:ompthreads=1
 #PBS -j oe
-set -uo pipefail
+set -o pipefail
 cd "${PBS_O_WORKDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# submitted from the repo root instead of cp2k/ ?  go into cp2k/
+[[ -f make_cp2k.py || ! -d cp2k ]] || cd cp2k
 here="$(pwd)"
+echo "workdir=$here  bash=$BASH_VERSION"
 export OMP_NUM_THREADS=1
 
 # --- locate CP2K --------------------------------------------------------
@@ -35,7 +38,10 @@ np="${NP:-${PBS_NCPUS:-$(nproc)}}"
 echo "CP2K=$cp2k  DATA=${CP2K_DATA_DIR:-<cp2k default>}  MPI=$launcher -np $np"
 
 [[ -d runs ]] || python3 make_cp2k.py
-names=("${NAME:-}"); [[ -n "${NAME:-}" ]] || names=($(cd runs && ls -d */ | tr -d /))
+[[ -d runs ]] || { echo "runs/ not found in $here (submit from the cp2k/ directory)" >&2; exit 2; }
+if [[ -n "${NAME:-}" ]]; then names=("$NAME"); else names=(); for d in runs/*/; do names+=("$(basename "$d")"); done; fi
+[[ ${#names[@]} -gt 0 ]] || { echo "no structures under $here/runs" >&2; exit 2; }
+echo "structures: ${names[*]}"
 ok() { [[ -f "$1" ]] && grep -q "PROGRAM ENDED" "$1"; }
 for n in "${names[@]}"; do
   cd "$here/runs/$n"
