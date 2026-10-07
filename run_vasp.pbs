@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# One structure: relax -> static (+ Bader).  qsub -v NAME=rib_y_o00_si run_vasp.pbs
+# EDIT the queue / resources / module lines for your cluster (placeholders below).
+#PBS -N clay_edge_vasp
+#PBS -q REPLACE_QUEUE
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=32:mpiprocs=32:mem=96gb
+#PBS -j oe
+set -euo pipefail
+cd "${PBS_O_WORKDIR:?}"
+: "${NAME:?qsub -v NAME=<structure>}"
+NP="${NP:-32}"
+VASP="${VASP_EXE:-vasp_std}"
+# module load vasp/6.x  intel-mpi   # <- cluster specific
+root="vasp/$NAME"
+
+[[ -s "$root/relax/POTCAR" ]] || { echo "Run make_potcar.sh first" >&2; exit 2; }
+( cd "$root/relax" && [[ -s CONTCAR && -f .done ]] || { mpirun -np "$NP" "$VASP" > vasp.out 2>&1 && touch .done; } )
+cd "$root/static"
+cp ../relax/CONTCAR POSCAR
+[[ -s POTCAR ]] || cp ../relax/POTCAR POTCAR
+mpirun -np "$NP" "$VASP" > vasp.out 2>&1
+# Bader on the all-electron density (needs Henkelman `bader` and `chgsum.pl` on PATH)
+chgsum.pl AECCAR0 AECCAR2
+bader CHGCAR -ref CHGCAR_sum
+cd - >/dev/null
+python3 bader_to_charges.py "$NAME"
