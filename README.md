@@ -12,7 +12,7 @@ SOAP→電荷(のちにSOAP→χ→QEq)モデルの教師データにするこ�
 | `structures/` | 構造7つ(`bulk`、y法線リボン4、x法線リボン2)。`.xyz`と`.json`(セル・周期性) |
 | `make_vasp.py` | `vasp/<name>/{relax,static}/` に POSCAR/INCAR/KPOINTS を生成(生成済みをコミット済み) |
 | `make_potcar.sh` | POTCARを連結(ライセンスの都合で同梱しない) |
-| `run_vasp.pbs`, `submit_all.sh` | 1構造あたり relax → static → Bader のPBSジョブ |
+| `run_vasp.pbs`, `submit_all.sh` | `qsub run_vasp.pbs` で全構造を relax → static → Bader(再開可)。`submit_all.sh` は構造ごとの並列投入 |
 | `bader_to_charges.py` | Bader `ACF.dat` → `vasp/<name>/static/charges.dat`(`structures/*.xyz`の原子順) |
 | `analyze_charges.py` | SOAP+カーネルリッジで学習し、学習に使わない向きのエッジで検証 |
 
@@ -25,16 +25,23 @@ SOAP→電荷(のちにSOAP→χ→QEq)モデルの教師データにするこ�
 
 ## 手順(スパコン)
 ```bash
-export VASP_POTCAR_DIR=/path/to/potpaw_PBE     # Si, Al, O, H のPAW_PBE
-bash make_potcar.sh                            # 順序は Si Al O H(POSCARと同じ)
-# run_vasp.pbs の queue/select/module を編集
-bash submit_all.sh                             # 7構造を独立ジョブで投入
-# 完了後
-python3 analyze_charges.py                     # vasp/*/static/charges.dat が全部揃っていること
+git clone https://github.com/haru2225/VASP.git && cd VASP
+qsub run_vasp.pbs          # これだけ。全7構造を順に relax → static → Bader
 ```
-`run_vasp.pbs` は `bader`(Henkelman)と `chgsum.pl` がPATHにあること、`ase`(解析のみ)が必要。
-Baderは全電子密度(AECCAR0+AECCAR2)に対して実行する。DDEC6を使う場合は、
-`static` の出力(CHGCAR, AECCAR*)から chargemol で別途計算し、同じ形式の `charges.dat` を作ればよい。
+`run_vasp.pbs` は次を自動で行う:
+- VASP実行ファイル(`PATH`、なければ `/home/center/app/VASP` 以下の `vasp_std*`)とPAW_PBEのPOTCARディレクトリを探す。
+  見つからなければ、環境変数 `VASP_EXE` / `VASP_POTCAR_DIR` を指定する(`qsub -v VASP_EXE=...,VASP_POTCAR_DIR=... run_vasp.pbs`)。
+- POTCARを作る(`make_potcar.sh`、順序 Si Al O H)。
+- 構造ごとに、収束した `relax` の構造で `static` を実行し、`bader` と `chgsum.pl` があれば Bader 電荷を `vasp/<name>/static/charges.dat` に書く。
+- 途中で止まっても、同じ `qsub run_vasp.pbs` で続きから再開(完了した段階はスキップ)。
+- 1構造だけ: `qsub -v NAME=rib_x_o00_si run_vasp.pbs`、構造ごとに並列ジョブ: `bash submit_all.sh`。
+
+キュー指定(`#PBS -q`)は入れていない(既定キュー)。必要なら `run_vasp.pbs` に追記。リソース(`ncpus=32`、`walltime=24:00:00`)は仮置き。
+全構造が終わったら:
+```bash
+python3 analyze_charges.py   # 要 ase, dscribe, scikit-learn
+```
+Baderが無い環境では `charges.dat` ができないので、`static` の CHGCAR/AECCAR を使って別途Bader(またはDDEC6)を計算し、同形式の `charges.dat` を作る。
 
 ## 計算条件
 PBE、PAW、ENCUT 520 eV、Γ中心k点(約20 Å/L、真空方向は1)、Gaussian smearing 0.05 eV、
@@ -48,6 +55,6 @@ walltimeは24 h(32コア)を仮置き。リボン約95原子なら通常は足�
   MDに使う場合はスケール換算が必要(`analyze_charges.py`はバルクのクラス別比を出力する)。
 - 電荷ラベルがClayFFそのものではなくDFT由来になる点が本来の目的。これを教師に、
   最終的には SOAP→χ→QEq(水は固定電荷)で可変電荷MDを作る計画(test4)。
-- `analyze_charges.py` の動作確認は、ダミーの電荷で通しただけ(実VASP結果での検証は未実施)。
+- `run_vasp.pbs` の流れは、偽の VASP/mpirun/bader を使ったモックでのみ確認した(実VASPでは未実行)。`analyze_charges.py` もダミーの電荷で通しただけ。
 - CP2K(Hirshfeld)での暫定結果: バルクはClayFFの約1/3.8のスケール。リボン2本は
   leave-one-out で固定タイプ電荷よりSOAPの平均誤差が約半分だったが、検証向き(x法線)は未計算。

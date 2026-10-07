@@ -1,27 +1,71 @@
 #!/usr/bin/env bash
-# One structure: relax -> static (+ Bader).  qsub -v NAME=rib_y_o00_si run_vasp.pbs
-# EDIT the queue / resources / module lines for your cluster (placeholders below).
+# Everything with one command:   qsub run_vasp.pbs
+# (re-run the same command to resume; finished structures/stages are skipped)
+# Options via env:  qsub -v NAME=rib_y_o00_si run_vasp.pbs   (one structure)
+#                   qsub -v VASP_EXE=...,VASP_POTCAR_DIR=...,NP=32 run_vasp.pbs
+# No `-q` line -> default queue. If your centre needs one, add:  #PBS -q <queue>
 #PBS -N clay_edge_vasp
-#PBS -q REPLACE_QUEUE
 #PBS -l walltime=24:00:00
-#PBS -l select=1:ncpus=32:mpiprocs=32:mem=96gb
+#PBS -l select=1:ncpus=32:mpiprocs=32
 #PBS -j oe
-set -euo pipefail
-cd "${PBS_O_WORKDIR:?}"
-: "${NAME:?qsub -v NAME=<structure>}"
-NP="${NP:-32}"
-VASP="${VASP_EXE:-vasp_std}"
-# module load vasp/6.x  intel-mpi   # <- cluster specific
-root="vasp/$NAME"
+set -uo pipefail
+cd "${PBS_O_WORKDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+here="$(pwd)"
+APP=/home/center/app/VASP
 
-[[ -s "$root/relax/POTCAR" ]] || { echo "Run make_potcar.sh first" >&2; exit 2; }
-( cd "$root/relax" && [[ -s CONTCAR && -f .done ]] || { mpirun -np "$NP" "$VASP" > vasp.out 2>&1 && touch .done; } )
-cd "$root/static"
-cp ../relax/CONTCAR POSCAR
-[[ -s POTCAR ]] || cp ../relax/POTCAR POTCAR
-mpirun -np "$NP" "$VASP" > vasp.out 2>&1
-# Bader on the all-electron density (needs Henkelman `bader` and `chgsum.pl` on PATH)
-chgsum.pl AECCAR0 AECCAR2
-bader CHGCAR -ref CHGCAR_sum
-cd - >/dev/null
-python3 bader_to_charges.py "$NAME"
+# --- locate VASP --------------------------------------------------------
+vasp="${VASP_EXE:-}"
+if [[ -z "$vasp" ]]; then
+  for c in vasp_std vasp_std.x vasp; do command -v "$c" >/dev/null 2>&1 && { vasp="$(command -v "$c")"; break; }; done
+fi
+if [[ -z "$vasp" && -d "$APP" ]]; then
+  vasp="$(find "$APP" -maxdepth 4 -type f -perm -u+x -name 'vasp_std*' 2>/dev/null | sort | tail -1)"
+fi
+if [[ -z "$vasp" ]]; then
+  echo "VASP executable not found. Set VASP_EXE, or add the centre's 'module load ...' line here." >&2
+  [[ -f "$APP/run.sh" ]] && { echo "--- centre sample $APP/run.sh ---" >&2; cat "$APP/run.sh" >&2; }
+  exit 2
+fi
+# --- locate PAW_PBE potentials -----------------------------------------
+pot="${VASP_POTCAR_DIR:-}"
+if [[ -z "$pot" && -d "$APP" ]]; then
+  p="$(find "$APP" -maxdepth 5 \( -path '*/Si/POTCAR' -o -path '*/Si/POTCAR.gz' -o -path '*/Si/POTCAR.Z' \) 2>/dev/null \
+        | grep -i 'pbe' | grep -vi 'lda\|gw' | head -1)"
+  [[ -n "$p" ]] && pot="$(dirname "$(dirname "$p")")"
+fi
+[[ -n "$pot" ]] || { echo "PAW_PBE POTCAR directory not found. Set VASP_POTCAR_DIR." >&2; exit 2; }
+launcher="$(command -v mpirun || command -v mpiexec || true)"
+[[ -n "$launcher" ]] || { echo "mpirun/mpiexec not found (add the centre's MPI module line)." >&2; exit 2; }
+np="${NP:-${PBS_NCPUS:-$(nproc)}}"
+echo "VASP=$vasp  POTCAR=$pot  MPI=$launcher -np $np"
+
+VASP_POTCAR_DIR="$pot" bash make_potcar.sh || exit 2
+have_bader=0; command -v bader >/dev/null 2>&1 && command -v chgsum.pl >/dev/null 2>&1 && have_bader=1
+[[ $have_bader -eq 1 ]] || echo "WARNING: bader/chgsum.pl not on PATH; charges.dat will not be made (CHGCAR/AECCAR kept)." >&2
+
+names=("${NAME:-}"); [[ -n "${NAME:-}" ]] || names=($(cd vasp && ls -d */ | tr -d /))
+for n in "${names[@]}"; do
+  root="$here/vasp/$n"
+  [[ -f "$root/static/charges.dat" ]] && { echo "[$n] already done"; continue; }
+  echo "[$n] relax"
+  cd "$root/relax"
+  if [[ ! -f .done ]]; then
+    [[ -s CONTCAR ]] && cp CONTCAR POSCAR       # resume an interrupted relaxation
+    if "$launcher" -np "$np" "$vasp" > vasp.out 2>&1 && grep -q "reached required accuracy" OUTCAR; then
+      touch .done
+    else
+      echo "[$n] RELAX FAILED or not converged (see $root/relax/vasp.out)" >&2; cd "$here"; continue
+    fi
+  fi
+  echo "[$n] static"
+  cd "$root/static"
+  cp ../relax/CONTCAR POSCAR
+  cp ../relax/POTCAR POTCAR 2>/dev/null || true
+  "$launcher" -np "$np" "$vasp" > vasp.out 2>&1 || { echo "[$n] STATIC FAILED" >&2; cd "$here"; continue; }
+  if [[ $have_bader -eq 1 ]]; then
+    chgsum.pl AECCAR0 AECCAR2 > /dev/null && bader CHGCAR -ref CHGCAR_sum > bader.out 2>&1 \
+      && (cd "$here" && python3 bader_to_charges.py "$n") || echo "[$n] Bader step failed" >&2
+  fi
+  cd "$here"
+done
+echo "finished"
