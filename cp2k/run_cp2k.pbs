@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Everything with one command:   qsub -q <queue> run_cp2k.pbs      (run from the cp2k/ directory)
+# Re-run the same command to resume; finished structures/stages are skipped.
+# Options (qsub -v ...):  NAME=<one structure>   NP=<MPI ranks>   CP2K_EXE=...   CP2K_DATA_DIR=...
+#PBS -N clay_edge_cp2k
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=32:mpiprocs=32
+#PBS -j oe
+set -uo pipefail
+cd "${PBS_O_WORKDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+here="$(pwd)"
+export OMP_NUM_THREADS=1
+
+# --- locate CP2K --------------------------------------------------------
+cp2k="${CP2K_EXE:-}"
+if [[ -z "$cp2k" ]]; then
+  for c in cp2k.psmp cp2k.popt cp2k.ssmp cp2k; do command -v "$c" >/dev/null 2>&1 && { cp2k="$(command -v "$c")"; break; }; done
+fi
+if [[ -z "$cp2k" && -d /home/center/app ]]; then
+  cp2k="$(find /home/center/app -maxdepth 5 -type f -perm -u+x \( -name 'cp2k.psmp' -o -name 'cp2k.popt' \) 2>/dev/null | sort | tail -1)"
+fi
+[[ -n "$cp2k" ]] || { echo "CP2K executable not found. Set CP2K_EXE (or add the centre's 'module load cp2k' line to this script)." >&2; exit 2; }
+# --- data dir (BASIS_MOLOPT, GTH_POTENTIALS) --------------------------------
+if [[ -z "${CP2K_DATA_DIR:-}" ]]; then
+  root="$(dirname "$(dirname "$cp2k")")"
+  for d in "$root/data" "$root/share/cp2k/data" "$(dirname "$cp2k")/../data"; do
+    [[ -f "$d/BASIS_MOLOPT" ]] && { export CP2K_DATA_DIR="$d"; break; }
+  done
+  [[ -n "${CP2K_DATA_DIR:-}" ]] || { d="$(find "$root" -maxdepth 4 -name BASIS_MOLOPT 2>/dev/null | head -1)"; [[ -n "$d" ]] && export CP2K_DATA_DIR="$(dirname "$d")"; }
+fi
+launcher="$(command -v mpirun || command -v mpiexec || true)"
+[[ -n "$launcher" ]] || { echo "mpirun/mpiexec not found (add the centre's MPI module line)." >&2; exit 2; }
+np="${NP:-${PBS_NCPUS:-$(nproc)}}"
+echo "CP2K=$cp2k  DATA=${CP2K_DATA_DIR:-<cp2k default>}  MPI=$launcher -np $np"
+
+[[ -d runs ]] || python3 make_cp2k.py
+names=("${NAME:-}"); [[ -n "${NAME:-}" ]] || names=($(cd runs && ls -d */ | tr -d /))
+ok() { [[ -f "$1" ]] && grep -q "PROGRAM ENDED" "$1"; }
+for n in "${names[@]}"; do
+  cd "$here/runs/$n"
+  [[ -f charges.dat ]] && { echo "[$n] already done"; continue; }
+  if ! ok opt.out; then
+    echo "[$n] geometry optimisation"
+    "$launcher" -np "$np" "$cp2k" -i opt.inp -o opt.out > /dev/null 2>&1
+    ok opt.out || { echo "[$n] OPT FAILED (see runs/$n/opt.out)" >&2; continue; }
+  fi
+  python3 - <<'PY'
+from pathlib import Path
+L = Path("opt-pos-1.xyz").read_text().splitlines()
+n = int(L[0]); Path("relaxed.xyz").write_text("\n".join(L[-(n + 2):]) + "\n")
+PY
+  if ! ok sp.out; then
+    echo "[$n] charge single point"
+    "$launcher" -np "$np" "$cp2k" -i sp.inp -o sp.out > /dev/null 2>&1
+    ok sp.out || { echo "[$n] SP FAILED (see runs/$n/sp.out)" >&2; continue; }
+  fi
+  (cd "$here" && python3 hirshfeld_to_charges.py "$n")
+done
+echo finished
