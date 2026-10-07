@@ -44,19 +44,34 @@ if [[ -z "$cp2k" && -d /home/center/app ]]; then
   cp2k="$(find /home/center/app -maxdepth 5 -type f -perm -u+x \( -name 'cp2k.psmp' -o -name 'cp2k.popt' \) 2>/dev/null | sort | tail -1)"
 fi
 [[ -n "$cp2k" ]] || { echo "CP2K executable not found. Set CP2K_EXE (or add the centre's 'module load cp2k' line to this script)." >&2; exit 2; }
-# --- data dir (BASIS_MOLOPT, GTH_POTENTIALS) --------------------------------
-if [[ -z "${CP2K_DATA_DIR:-}" ]]; then
-  root="$(dirname "$(dirname "$cp2k")")"
-  for d in "$root/data" "$root/share/cp2k/data" "$(dirname "$cp2k")/../data"; do
-    [[ -f "$d/BASIS_MOLOPT" ]] && { export CP2K_DATA_DIR="$d"; break; }
+# --- data dir (needs BASIS_MOLOPT and GTH_POTENTIALS) ---------------------------------
+have_data() { [[ -n "${1:-}" && -f "$1/BASIS_MOLOPT" && -f "$1/GTH_POTENTIALS" ]]; }
+data=""
+have_data "${CP2K_DATA_DIR:-}" && data="$CP2K_DATA_DIR"
+if [[ -z "$data" ]]; then      # walk up from the executable: <prefix>/data, <prefix>/share/cp2k/data, ...
+  d="$(dirname "$(readlink -f "$cp2k" 2>/dev/null || echo "$cp2k")")"
+  for _ in 1 2 3 4 5; do
+    for c in "$d/data" "$d/share/cp2k/data" "$d/share/data" "$d"; do have_data "$c" && { data="$c"; break 2; }; done
+    d="$(dirname "$d")"
   done
-  [[ -n "${CP2K_DATA_DIR:-}" ]] || { d="$(find "$root" -maxdepth 4 -name BASIS_MOLOPT 2>/dev/null | head -1)"; [[ -n "$d" ]] && export CP2K_DATA_DIR="$(dirname "$d")"; }
 fi
+if [[ -z "$data" ]]; then      # search the centre's application tree
+  for root in /home/center/app/CP2K /home/center/app; do
+    [[ -d "$root" ]] || continue
+    for f in $(find "$root" -maxdepth 7 -name BASIS_MOLOPT 2>/dev/null | head -20); do have_data "$(dirname "$f")" && { data="$(dirname "$f")"; break 2; }; done
+  done
+fi
+if [[ -z "$data" ]]; then
+  echo "BASIS_MOLOPT / GTH_POTENTIALS not found. Find them with:  find /home/center/app -name BASIS_MOLOPT" >&2
+  echo "then submit with:  qsub -v CP2K_DATA_DIR=<that directory> run_cp2k.pbs" >&2
+  exit 2
+fi
+export CP2K_DATA_DIR="$data"
 launcher="$(command -v mpirun || command -v mpiexec || true)"
 [[ -n "$launcher" ]] || { echo "mpirun/mpiexec not found (add the centre's MPI module line)." >&2; exit 2; }
 np="${NP:-${PBS_NCPUS:-$(nproc)}}"
 command -v ldd >/dev/null 2>&1 && { echo "--- ldd (missing/libstdc++) ---"; ldd "$cp2k" 2>&1 | grep -i "not found\|libstdc++"; ldd "$launcher" 2>&1 | grep -i "not found"; echo "---"; }
-echo "CP2K=$cp2k  DATA=${CP2K_DATA_DIR:-<cp2k default>}  MPI=$launcher -np $np"
+echo "CP2K=$cp2k  DATA=$CP2K_DATA_DIR  MPI=$launcher -np $np"
 
 [[ -d runs ]] || { echo "runs/ not found in $here (submit from the cp2k/ directory; it is part of the repo)" >&2; exit 2; }
 if [[ -n "${NAME:-}" ]]; then names=("$NAME"); else names=(); for d in runs/*/; do names+=("$(basename "$d")"); done; fi
@@ -65,6 +80,7 @@ echo "structures: ${names[*]}"
 ok() { [[ -f "$1" ]] && grep -q "PROGRAM ENDED" "$1"; }
 for n in "${names[@]}"; do
   cd "$here/runs/$n"
+  ln -sf "$CP2K_DATA_DIR/BASIS_MOLOPT" "$CP2K_DATA_DIR/GTH_POTENTIALS" .
   [[ -f charges.dat ]] && { echo "[$n] already done"; continue; }
   if ! ok opt.out; then
     echo "[$n] geometry optimisation"
