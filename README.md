@@ -9,7 +9,7 @@ VASPが使えない環境向けに、同じ構造をCP2K(PBE、GTH、MOLOPT)で�
 電荷はHirshfeld。VASP版(Bader)とは電荷のスケールが違うので、混ぜずに別々に扱うこと。
 ```bash
 git clone https://github.com/haru2225/VASP.git && cd VASP/cp2k
-qsub -q <キュー名> run_cp2k.pbs      # 全7構造: 構造最適化 → 電荷計算 → runs/<name>/charges.dat
+qsub run_cp2k.pbs                  # キューは sc16、16コア(run_cp2k.pbsの#PBS行)。全7構造: 構造最適化 → 電荷計算 → runs/<name>/charges.dat
 python3 analyze_charges.py           # 完了後(要 numpy, ase, dscribe, scikit-learn)
 ```
 - `run_cp2k.pbs` は `PATH`(なければ `/home/center/app` 以下)から `cp2k.psmp` / `cp2k.popt` と、`BASIS_MOLOPT` のあるデータディレクトリを探す。

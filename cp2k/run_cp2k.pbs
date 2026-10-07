@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Everything with one command:   qsub -q <queue> run_cp2k.pbs      (run from the cp2k/ directory)
+# Everything with one command:   qsub run_cp2k.pbs      (run from the cp2k/ directory)
 # Re-run the same command to resume; finished structures/stages are skipped.
 # Options (qsub -v ...):  NAME=<one structure>   NP=<MPI ranks>   CP2K_EXE=...   CP2K_DATA_DIR=...
+#PBS -q sc16
 #PBS -N clay_edge_cp2k
 #PBS -l walltime=24:00:00
-#PBS -l select=1:ncpus=32:mpiprocs=32
+#PBS -l select=1:ncpus=16:mpiprocs=16:ompthreads=1
 #PBS -j oe
 set -uo pipefail
 cd "${PBS_O_WORKDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
