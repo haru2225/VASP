@@ -7,6 +7,9 @@
 #PBS -l walltime=24:00:00
 #PBS -l select=1:ncpus=16:mpiprocs=16:ompthreads=1
 #PBS -j oe
+#PBS -S /bin/bash
+# some PBS setups run the script with sh/tcsh and ignore the shebang
+[ -n "${BASH_VERSION:-}" ] || exec /bin/bash "$0" "$@"
 set -o pipefail
 cd "${PBS_O_WORKDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # submitted from the repo root instead of cp2k/ ?  go into cp2k/
