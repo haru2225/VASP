@@ -18,6 +18,23 @@ here="$(pwd)"
 echo "workdir=$here  bash=$BASH_VERSION"
 export OMP_NUM_THREADS=1
 
+# --- environment of the centre's own CP2K sample (module loads fix e.g. "GLIBCXX_3.4.30 not found") ---
+# Lines starting with module/source/export PATH|LD_LIBRARY_PATH... are replayed from the sample script.
+# Override the file with  qsub -v CP2K_ENV_SCRIPT=/path/to/sample.sh  (set to "none" to skip).
+envsrc="${CP2K_ENV_SCRIPT:-/home/center/app/CP2K/cp2k_20251.sh}"
+if ! type module >/dev/null 2>&1; then
+  for f in /etc/profile.d/modules.sh /usr/share/Modules/init/bash /etc/profile.d/lmod.sh; do [[ -f "$f" ]] && . "$f" && break; done
+fi
+if [[ "$envsrc" != none && -r "$envsrc" ]]; then
+  echo "replaying environment lines from $envsrc"
+  while IFS= read -r line; do
+    echo "  $line"
+    eval "$line" || echo "  (failed: $line)" >&2
+  done < <(grep -E '^[[:space:]]*(module[[:space:]]+(load|use|add|purge|switch|swap|unload)|source[[:space:]]|\.[[:space:]]|export[[:space:]]+(PATH|LD_LIBRARY_PATH|CP2K[A-Za-z_]*|OMP_[A-Za-z_]*|I_MPI[A-Za-z_]*|OMPI[A-Za-z_]*)=)' "$envsrc" | sed 's/#.*$//')
+fi
+
+export OMP_NUM_THREADS=1   # pure-MPI run, whatever the sample set
+
 # --- locate CP2K --------------------------------------------------------
 cp2k="${CP2K_EXE:-}"
 if [[ -z "$cp2k" ]]; then
@@ -38,6 +55,7 @@ fi
 launcher="$(command -v mpirun || command -v mpiexec || true)"
 [[ -n "$launcher" ]] || { echo "mpirun/mpiexec not found (add the centre's MPI module line)." >&2; exit 2; }
 np="${NP:-${PBS_NCPUS:-$(nproc)}}"
+command -v ldd >/dev/null 2>&1 && { echo "--- ldd (missing/libstdc++) ---"; ldd "$cp2k" 2>&1 | grep -i "not found\|libstdc++"; ldd "$launcher" 2>&1 | grep -i "not found"; echo "---"; }
 echo "CP2K=$cp2k  DATA=${CP2K_DATA_DIR:-<cp2k default>}  MPI=$launcher -np $np"
 
 [[ -d runs ]] || { echo "runs/ not found in $here (submit from the cp2k/ directory; it is part of the repo)" >&2; exit 2; }
