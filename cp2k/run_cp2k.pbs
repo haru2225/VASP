@@ -40,8 +40,7 @@ launcher="$(command -v mpirun || command -v mpiexec || true)"
 np="${NP:-${PBS_NCPUS:-$(nproc)}}"
 echo "CP2K=$cp2k  DATA=${CP2K_DATA_DIR:-<cp2k default>}  MPI=$launcher -np $np"
 
-[[ -d runs ]] || python3 make_cp2k.py
-[[ -d runs ]] || { echo "runs/ not found in $here (submit from the cp2k/ directory)" >&2; exit 2; }
+[[ -d runs ]] || { echo "runs/ not found in $here (submit from the cp2k/ directory; it is part of the repo)" >&2; exit 2; }
 if [[ -n "${NAME:-}" ]]; then names=("$NAME"); else names=(); for d in runs/*/; do names+=("$(basename "$d")"); done; fi
 [[ ${#names[@]} -gt 0 ]] || { echo "no structures under $here/runs" >&2; exit 2; }
 echo "structures: ${names[*]}"
@@ -51,19 +50,21 @@ for n in "${names[@]}"; do
   [[ -f charges.dat ]] && { echo "[$n] already done"; continue; }
   if ! ok opt.out; then
     echo "[$n] geometry optimisation"
-    "$launcher" -np "$np" "$cp2k" -i opt.inp -o opt.out > /dev/null 2>&1
-    ok opt.out || { echo "[$n] OPT FAILED (see runs/$n/opt.out)" >&2; continue; }
+    "$launcher" -np "$np" "$cp2k" -i opt.inp -o opt.out > opt.stdout 2>&1
+    ok opt.out || { echo "[$n] OPT FAILED (see runs/$n/opt.stdout, opt.out)" >&2; tail -n 15 opt.stdout >&2; tail -n 15 opt.out >&2; continue; }
   fi
-  python3 - <<'PY'
-from pathlib import Path
-L = Path("opt-pos-1.xyz").read_text().splitlines()
-n = int(L[0]); Path("relaxed.xyz").write_text("\n".join(L[-(n + 2):]) + "\n")
-PY
+  natoms=$(head -n 1 start.xyz)
+  tail -n $((natoms + 2)) opt-pos-1.xyz > relaxed.xyz      # last frame of the optimisation
   if ! ok sp.out; then
     echo "[$n] charge single point"
-    "$launcher" -np "$np" "$cp2k" -i sp.inp -o sp.out > /dev/null 2>&1
-    ok sp.out || { echo "[$n] SP FAILED (see runs/$n/sp.out)" >&2; continue; }
+    "$launcher" -np "$np" "$cp2k" -i sp.inp -o sp.out > sp.stdout 2>&1
+    ok sp.out || { echo "[$n] SP FAILED (see runs/$n/sp.stdout, sp.out)" >&2; tail -n 15 sp.stdout >&2; tail -n 15 sp.out >&2; continue; }
   fi
-  (cd "$here" && python3 hirshfeld_to_charges.py "$n")
+  # Hirshfeld net charges -> charges.dat (atom order = start.xyz); plain awk, no python needed
+  awk '/Hirshfeld Charges/ {f=1; print "# index element net_charge(Hirshfeld)"; next}
+       f && $1 ~ /^[0-9]+$/ && NF >= 6 {printf "%d %s %.5f\n", $1-1, $2, $NF; c++; next}
+       f && c > 0 && NF == 0 {exit}' sp.out > charges.tmp
+  if [[ $(grep -vc '^#' charges.tmp) -eq $natoms ]]; then mv charges.tmp charges.dat; echo "[$n] charges.dat written ($natoms atoms)"
+  else echo "[$n] could not parse Hirshfeld charges from sp.out" >&2; fi
 done
 echo finished

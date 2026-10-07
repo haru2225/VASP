@@ -14,6 +14,7 @@ python3 analyze_charges.py           # 完了後(要 numpy, ase, dscribe, scikit
 ```
 - `run_cp2k.pbs` は `PATH`(なければ `/home/center/app` 以下)から `cp2k.psmp` / `cp2k.popt` と、`BASIS_MOLOPT` のあるデータディレクトリを探す。
   見つからなければ `qsub -v CP2K_EXE=...,CP2K_DATA_DIR=... run_cp2k.pbs`。MPIのmoduleが必要なら `run_cp2k.pbs` に `module load` を追記。
+- `run_cp2k.pbs` は python に依存しない(計算ノードに `python3` が無い環境でも動く: `relaxed.xyz` は `tail`、`charges.dat` は `awk` で作る)。CP2K/mpirunの標準出力・エラーは `runs/<name>/{opt,sp}.stdout` に残り、失敗時はジョブログに末尾を出す。
 - 再実行すれば続きから(完了した段階は `opt.out` / `sp.out` の `PROGRAM ENDED` で判定)。1構造だけ: `-v NAME=rib_x_o00_si`。
 - `make_cp2k.py` で入力を再生成、`hirshfeld_to_charges.py` で `sp.out` → `charges.dat`。入力は生成済みでコミット済み。
 - 動作確認: 生成した `sp.inp` をローカルのCP2K 2026.2で実際に実行(バルク40原子、約1分、Hirshfeld出力・変換とも正常)。
