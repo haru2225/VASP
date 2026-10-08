@@ -22,6 +22,32 @@ python3 analyze_charges.py           # 完了後(要 numpy, ase, dscribe, scikit
   PBSの流れは偽のCP2K/mpirunでのみ確認(実機のスパコンでは未実行)。構造最適化(LBFGS、最大200ステップ)は
   ローカルでは30〜80ステップで打ち切った構造しか得ていないので、スパコンで収束まで回す想定。
 
+## 追加: 失敗した構造の再投入と、水・イオン入りの系(`cp2k/`)
+**1. SCFが収束しない場合の自動リトライ。** `run_cp2k.pbs` は、構造最適化を最大3回、電荷計算を最大2回試す。
+1回目は従来のOT(速い)。失敗したら、直前の幾何から、対角化+Broyden混合+Fermi–Dirac smearing(300 K)の
+頑健な設定(`opt_robust.inp`、`sp_robust.inp`)で続ける。途中で止まった(walltime切れ等)最適化も、
+同じ `qsub` で最後の構造から再開する。smearingを使った場合、エネルギーは僅かに変わるが、電荷への影響は小さいはず(未検証)。
+`rib_x_o00_al`(最適化7ステップ目でSCF不収束)と `rib_y_o37_si`(22ステップ目で停止)は、そのまま再投入すればよい:
+```bash
+cd VASP/cp2k && git pull
+qsub -v NAME=rib_x_o00_al run_cp2k.pbs
+qsub -v NAME=rib_y_o37_si run_cp2k.pbs
+```
+**2. エッジ + 水(+ Mg置換 + Na⁺)。** `build_wet.py`(ローカルでLAMMPS+numpyで実行済み、結果をコミット)が、
+DFTで緩和したリボン(`structures_relaxed/`: `rib_y_o00_si`, `rib_y_o00_al`, `rib_x_o00_si`)の
+2つのエッジの間の真空部に、約0.85 g/cm³のSPC水(12〜23分子)を置き、リボンを固定して
+古典MD(ClayFF電荷、NVT 300 K、zは層の厚さ±1.5 Åに閉じ込め)で12 psなじませ、6 psと12 psの2スナップショットを
+`structures_wet/` に出力する。`w` は水のみ(中性、水の分極の評価用)、`wNa` は内部のAlを1つMgに置換(層電荷 −1、
+元のSi8Al3.5Mg0.5モデルと同じ密度)してNa⁺を1つ水中に置いた系。計12系(129〜154原子)。
+リボンの座標はDFTの緩和構造のまま(Mgサイトは再緩和していない)。古典MDは水の配置にしか使わず、電荷はCP2Kの1点計算で出す。
+```bash
+cd VASP/cp2k
+qsub -v RUNS=runs_wet run_cp2k.pbs          # 12系を順に(1点計算のみ、NO_OPT)。個別: -v RUNS=runs_wet,NAME=wet_rib_y_o00_si_w1
+python3 analyze_wet.py                       # 水によるリボン原子の電荷変化 dq = q_wet - q_dry
+```
+ローカルの8コアで、129原子の1点計算(SCF 1回あたり約3.6秒)を確認中。スパコンの16コアでは1系あたり十数分〜数十分の見込み。
+Mg(GTH-PBE-q10)とNa(GTH-PBE-q9)のDZVP-MOLOPT-SR-GTH基底はCP2Kのデータで確認済み。
+
 ## 中身
 | ファイル | 役割 |
 |---|---|
